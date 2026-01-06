@@ -1,5 +1,5 @@
 {
-    "name": "stack/kyphp",
+    "name": "frost-bit-star/kyphp",
     "description": "Ky-style minimal and fast PHP HTTP client with async batch support, hooks, retries, and JSON handling.",
     "type": "library",
     "license": "MIT",
@@ -18,5 +18,11 @@
         }
     },
     "minimum-stability": "stable",
-    "prefer-stable": true
+    "prefer-stable": true,
+    "provide": {
+        "kyphp": "self.version"
+    },
+    "replace": {
+        "kyphp": "self.version"
+    }
 }
