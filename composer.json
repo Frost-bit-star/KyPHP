@@ -1,0 +1,22 @@
+{
+    "name": "stack/kyphp",
+    "description": "Ky-style minimal and fast PHP HTTP client with async batch support, hooks, retries, and JSON handling.",
+    "type": "library",
+    "license": "MIT",
+    "authors": [
+        {
+            "name": "morgan miller",
+            "email": "morganmilstone983@gmail.com"
+        }
+    ],
+    "require": {
+        "php": ">=8.1"
+    },
+    "autoload": {
+        "psr-4": {
+            "KyPHP\\": "src/"
+        }
+    },
+    "minimum-stability": "stable",
+    "prefer-stable": true
+}
