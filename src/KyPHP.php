@@ -8,12 +8,16 @@ class KyPHP
 {
     private string $url;
     private string $method = 'GET';
-    private string $headersRaw = '';
+    private array $headers = [];
     private ?string $body = null;
     private string $queryString = '';
     private int $retry = 0;
+
     private $beforeHook = null;
     private $afterHook = null;
+
+    // Shared persistent curl handle for HTTP/2 reuse
+    private static $persistentHandle = null;
 
     // Async batch
     private static array $batch = [];
@@ -36,7 +40,7 @@ class KyPHP
     }
 
     public function header(string $key, string $value): self {
-        $this->headersRaw .= "$key: $value\r\n";
+        $this->headers[$key] = $value;
         return $this;
     }
 
@@ -50,16 +54,13 @@ class KyPHP
     }
 
     public function json(mixed $data): self {
-        $this->body = json_encode(
-            $data,
-            JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES
-        );
+        $this->body = json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
         $this->header('Content-Type', 'application/json');
         return $this;
     }
 
     public function retry(int $n): self {
-        $this->retry = $n;
+        $this->retry = max(0, $n);
         return $this;
     }
 
@@ -79,66 +80,60 @@ class KyPHP
     private function buildCurl(string $url) {
         $ch = curl_init($url);
 
-        curl_setopt_array($ch, [
+        $opts = [
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_CUSTOMREQUEST  => $this->method,
             CURLOPT_FOLLOWLOCATION => true,
             CURLOPT_MAXREDIRS      => 3,
             CURLOPT_TCP_FASTOPEN   => true,
-        ]);
+            CURLOPT_HTTP_VERSION   => CURL_HTTP_VERSION_2_0, // HTTP/2 for persistent connections
+        ];
 
-        if ($this->headersRaw) {
-            curl_setopt(
-                $ch,
-                CURLOPT_HTTPHEADER,
-                explode("\r\n", rtrim($this->headersRaw))
+        if ($this->headers) {
+            $opts[CURLOPT_HTTPHEADER] = array_map(
+                fn($k, $v) => "$k: $v",
+                array_keys($this->headers),
+                $this->headers
             );
         }
 
         if ($this->body !== null) {
-            curl_setopt($ch, CURLOPT_POSTFIELDS, $this->body);
+            $opts[CURLOPT_POSTFIELDS] = $this->body;
         }
 
+        curl_setopt_array($ch, $opts);
         return $ch;
     }
 
     // ----------------------
-    // Send single request
+    // Single request with retries
     // ----------------------
     public function send(): array {
-        $attempts = $this->retry + 1;
-        $url = $this->queryString
-            ? "{$this->url}?{$this->queryString}"
-            : $this->url;
+        $url = $this->queryString ? "{$this->url}?{$this->queryString}" : $this->url;
+        $attempts = 0;
+        $maxAttempts = $this->retry + 1;
 
-        while ($attempts-- > 0) {
-            if ($this->beforeHook) {
-                ($this->beforeHook)($this);
-            }
+        while ($attempts < $maxAttempts) {
+            $attempts++;
+
+            if ($this->beforeHook) ($this->beforeHook)($this);
 
             $ch = $this->buildCurl($url);
             $body = curl_exec($ch);
-            $error = curl_error($ch);
             $status = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            $error = curl_error($ch);
+
             curl_close($ch);
 
-            $response = [
-                'status' => $status,
-                'body'   => $body
-            ];
+            $response = ['status' => $status, 'body' => $body];
 
-            if ($this->afterHook) {
-                ($this->afterHook)($response);
-            }
-
-            if (!$error) {
+            if (!$error && $status < 500) {
+                if ($this->afterHook) ($this->afterHook)($response);
                 return $response;
             }
         }
 
-        throw new Exception(
-            "Request failed after {$this->retry} retries"
-        );
+        throw new Exception("Request failed after {$this->retry} retries");
     }
 
     public function sendJson(): mixed {
@@ -147,7 +142,7 @@ class KyPHP
     }
 
     // ----------------------
-    // Async batch
+    // Async batch with parallel retries
     // ----------------------
     public function addToBatch(): self {
         self::$batch[] = $this;
@@ -157,54 +152,59 @@ class KyPHP
     public static function sendBatch(): array {
         if (!self::$batch) return [];
 
-        $multi = curl_multi_init();
-        $handles = [];
         $responses = [];
+        $pending = self::$batch;
 
-        foreach (self::$batch as $i => $req) {
-            if ($req->beforeHook) {
-                ($req->beforeHook)($req);
+        // Loop until all requests succeed or max retries exhausted
+        while ($pending) {
+            $multi = curl_multi_init();
+            $handles = [];
+
+            foreach ($pending as $i => $req) {
+                if ($req->beforeHook) ($req->beforeHook)($req);
+
+                $url = $req->queryString ? "{$req->url}?{$req->queryString}" : $req->url;
+                $ch = $req->buildCurl($url);
+
+                // Track retries
+                $req->_attempts ??= 0;
+                $req->_attempts++;
+
+                curl_multi_add_handle($multi, $ch);
+                $handles[$i] = $ch;
             }
 
-            $url = $req->queryString
-                ? "{$req->url}?{$req->queryString}"
-                : $req->url;
+            // Execute all handles in parallel
+            do {
+                $status = curl_multi_exec($multi, $running);
+                if ($running) curl_multi_select($multi, 0.1);
+            } while ($running && $status === CURLM_OK);
 
-            $ch = $req->buildCurl($url);
-            curl_multi_add_handle($multi, $ch);
-            $handles[$i] = $ch;
+            $nextPending = [];
+            foreach ($handles as $i => $ch) {
+                $req = $pending[$i];
+                $body = curl_multi_getcontent($ch);
+                $status = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+
+                curl_multi_remove_handle($multi, $ch);
+                curl_close($ch);
+
+                $response = ['status' => $status, 'body' => $body];
+
+                if ($req->afterHook) ($req->afterHook)($response);
+
+                if ($status >= 500 && $req->_attempts <= $req->retry + 1) {
+                    $nextPending[] = $req; // Retry failed request in next batch loop
+                } else {
+                    $responses[] = $response;
+                }
+            }
+
+            curl_multi_close($multi);
+            $pending = $nextPending;
         }
 
-        do {
-            $status = curl_multi_exec($multi, $running);
-            if ($running) {
-                curl_multi_select($multi, 0.1);
-            }
-        } while ($running && $status === CURLM_OK);
-
-        foreach ($handles as $i => $ch) {
-            $body = curl_multi_getcontent($ch);
-            $status = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-
-            curl_multi_remove_handle($multi, $ch);
-            curl_close($ch);
-
-            $response = [
-                'status' => $status,
-                'body'   => $body
-            ];
-
-            $req = self::$batch[$i];
-            if ($req->afterHook) {
-                ($req->afterHook)($response);
-            }
-
-            $responses[] = $response;
-        }
-
-        curl_multi_close($multi);
         self::$batch = [];
-
         return $responses;
     }
 

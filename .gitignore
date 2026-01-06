@@ -1,4 +1,33 @@
-* text=auto eol=lf
+# -------------------
+# Composer / PHP
+# -------------------
+/vendor/
+composer.lock
 
+# -------------------
+# IDEs / Editors
+# -------------------
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# -------------------
+# OS / System files
+# -------------------
+.DS_Store
+Thumbs.db
+
+# -------------------
+# PHP / Runtime
+# -------------------
+*.log
+*.cache
+*.tmp
+
+# -------------------
+# Line endings
+# -------------------
+* text=auto eol=lf
 *.md text eol=lf
 *.json text eol=lf
