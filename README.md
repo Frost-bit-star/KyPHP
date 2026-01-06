@@ -25,7 +25,7 @@ KyPHP is a minimal, fast, and chainable PHP HTTP client inspired by Ky
 
 **Install via Composer:**
 ```
-composer require kyphp
+composer require frost-bit-star/kyphp
 ```
 
 **Autoload in your project:**

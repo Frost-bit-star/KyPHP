@@ -5,7 +5,7 @@
     "license": "MIT",
     "authors": [
         {
-            "name": "morgan miller",
+            "name": "Morgan Miller",
             "email": "morganmilstone983@gmail.com"
         }
     ],
@@ -19,10 +19,13 @@
     },
     "minimum-stability": "stable",
     "prefer-stable": true,
-    "provide": {
-        "kyphp": "self.version"
+    "extra": {
+        "branch-alias": {
+            "dev-main": "1.0-dev"
+        }
     },
-    "replace": {
-        "kyphp": "self.version"
+    "suggest": {
+        "ext-curl": "Required for optimal HTTP requests",
+        "ext-json": "Required for JSON encoding/decoding"
     }
 }
